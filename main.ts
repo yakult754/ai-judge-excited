@@ -3,41 +3,49 @@
 // Node 22, TypeScript, standard library only — no dependencies, no network.
 //
 // The grader runs `node main.ts` in a fresh sandbox (60s wall budget) and
-// expects /output/entry.png to be a byte-for-byte copy of the repository's
-// ./entry.png (at most 1 MiB, at most 1024x1024 pixels). Two runs must
-// write identical bytes, so the program is a pure, deterministic copy.
+// expects /output/entry.png to be a binary PNG/JPEG of at most 1 MiB and at
+// most 1024x1024 pixels. The image is stored beside this file as base64 text
+// (entry.png.b64) so it survives any transport that only carries text, and
+// this program decodes it back to the exact original bytes.
 //
-// Strategy: resolve the source path relative to import.meta.url (not the
-// cwd) so the copy is correct regardless of where node is launched from,
-// then write the exact bytes through the output directory requested by the
-// grader via MAKEFUN_OUTPUT_DIR (defaulting to /output).
+// Determinism: base64 decoding is pure, so two runs always write identical
+// bytes. Nothing here touches the clock, the network or the environment
+// except the output directory.
+//
+// Strategy: resolve both paths relative to import.meta.url (not the cwd) so
+// the program works however it is launched, then write through the directory
+// the grader selects via MAKEFUN_OUTPUT_DIR (defaulting to /output).
 
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Source image lives next to this module: <repo>/entry.png. Resolving it
-// against import.meta.url keeps the path stable when the cwd changes.
+// Source files live next to this module. Resolving against import.meta.url
+// keeps the paths stable when the cwd changes.
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const sourcePath = resolve(moduleDir, "entry.png");
+const sourcePath = resolve(moduleDir, "entry.png.b64");
 
 if (!existsSync(sourcePath)) {
-  throw new Error(`entry.png not found next to main.ts at ${sourcePath}`);
+  throw new Error(`entry.png.b64 not found next to main.ts at ${sourcePath}`);
 }
 
-// The grader selects the output directory via MAKEFUN_OUTPUT_DIR; fall
-// back to /output when running outside the grader sandbox.
+// The base64 text may be wrapped across lines; whitespace is not significant.
+const base64 = readFileSync(sourcePath, "utf8").replace(/\s+/g, "");
+const imageBytes = Buffer.from(base64, "base64");
+
+if (imageBytes.length === 0) {
+  throw new Error("entry.png.b64 decoded to zero bytes");
+}
+if (imageBytes.length > 1024 * 1024) {
+  throw new Error(`image is ${imageBytes.length} bytes, over the 1 MiB cap`);
+}
+
+// The grader selects the output directory via MAKEFUN_OUTPUT_DIR; fall back
+// to /output when running outside the grader sandbox.
 const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
 const outputPath = join(outputDir, "entry.png");
 
-// Read the source bytes once, then ensure the destination directory exists
-// before writing. The same bytes are written every run, which makes the
-// output deterministic across invocations.
-const sourceBytes = readFileSync(sourcePath);
 mkdirSync(outputDir, { recursive: true });
-writeFileSync(outputPath, sourceBytes);
+writeFileSync(outputPath, imageBytes);
 
-// Log a short confirmation with a sha256 so two runs can be compared.
-const sha = createHash("sha256").update(sourceBytes).digest("hex");
-console.log(`copied ${sourceBytes.length} bytes to ${outputPath} (sha256=${sha})`);
+console.log(`wrote ${imageBytes.length} bytes to ${outputPath}`);
